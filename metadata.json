@@ -1,0 +1,6 @@
+{
+  "name": "Call Reminder",
+  "description": "A smart call reminder application that notifies you to check in on loved ones and validates contact history securely from call logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

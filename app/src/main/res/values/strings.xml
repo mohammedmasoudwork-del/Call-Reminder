@@ -1,0 +1,51 @@
+<resources>
+    <string name="app_name">Call Reminder</string>
+    <string name="person_name_label">اسم الشخص</string>
+    <string name="phone_number_label">رقم الهاتف</string>
+    <string name="reminder_interval_label">تكرار التنبيه</string>
+    <string name="snooze_interval_label">إعادة التنبيه في حال تجاهل الإشعار</string>
+    <string name="min_duration_label">الحد الأدنى للمكالمة (ثواني)</string>
+    <string name="reminder_status_enabled">التذكير: نشط ويعمل بالخلفية</string>
+    <string name="reminder_status_disabled">التذكير: متوقف حاليًا</string>
+    <string name="last_call_label">آخر مكالمة تم تسجيلها:</string>
+    <string name="last_call_never">لم يتم الاتصال بعد</string>
+    <string name="called_today_yes">تم الاتصال اليوم: نعم ❤️</string>
+    <string name="called_today_no">تم الاتصال اليوم: لا ⚠️</string>
+    <string name="save_changes_btn">حفظ البيانات</string>
+    <string name="enable_reminder_btn">تفعيل التذكير</string>
+    <string name="disable_reminder_btn">إيقاف التذكير</string>
+    <string name="test_notification_btn">اختبار الإشعار (الآن)</string>
+    <string name="manual_confirm_btn">أنا اتصلت اليوم</string>
+    
+    <string name="permission_notif_denied">برجاء تفعيل صلاحية الإشعارات من إعدادات الهاتف لمتابعة التذكير بانتظام.</string>
+    <string name="permission_call_log_denied">صلاحية سجل المكالمات غير مفعلة. سيعمل التطبيق بطريقة التأكيد اليدوية فقط.</string>
+    
+    <string name="phone_number_required">يرجى إدخال رقم الهاتف أولاً للتفعيل!</string>
+    <string name="settings_saved">تم حفظ الإعدادات بنجاح ❤️</string>
+    
+    <string name="notification_title">اطمن على أختك</string>
+    <string name="notification_body">عدى وقت كفاية، اتصل بها واطمن عليها ❤️</string>
+    <string name="notification_btn_call">اتصل الآن</string>
+    <string name="notification_btn_snooze">ذكرني لاحقًا</string>
+    <string name="notification_btn_done">أنا اتصلت</string>
+    
+    <string name="call_confirmed_manual">تمام، تم تسجيل الاتصال ❤️</string>
+    
+    <string name="call_confirmed_auto_title">تمام ❤️</string>
+    <string name="call_confirmed_auto_body">أنت اتصلت بأختك النهارده</string>
+    
+    <string name="call_failed_auto_title">لسه محتاج تطمن عليها</string>
+    <string name="call_failed_auto_body">هفكرك تاني كمان شوية</string>
+    
+    <string name="every_day">كل يوم</string>
+    <string name="every_2_days">كل يومين</string>
+    <string name="every_week">كل أسبوع</string>
+    
+    <string name="snooze_30_min">30 دقيقة</string>
+    <string name="snooze_1_hour">ساعة واحدة</string>
+    <string name="snooze_2_hours">ساعتين</string>
+    
+    <string name="permission_request_title">الصلاحيات المطلوبة</string>
+    <string name="permission_request_desc">نحتاج لصلاحية الإشعارات وسجل المكالمات لتذكيرك والتحقق تلقائيًا من سلامة اتصالك بأختك.</string>
+    <string name="grant_permissions_btn">منح الصلاحيات</string>
+</resources>
