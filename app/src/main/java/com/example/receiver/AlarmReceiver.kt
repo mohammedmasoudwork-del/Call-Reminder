@@ -19,30 +19,24 @@ import java.util.Calendar
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
+        val personId = intent.getIntExtra("PERSON_ID", -1)
+        if (personId == -1) return
+
         val db = AppDatabase.getDatabase(context)
         val repository = ReminderRepository(db.reminderDao())
 
-        if (action == "com.example.ACTION_SHOW_REMINDER") {
-            val pendingResult = goAsync()
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val config = repository.getConfig()
-                    if (config != null && config.isReminderEnabled && config.phoneNumber.isNotEmpty()) {
-                        ReminderScheduler.showReminderNotification(context, config)
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val person = repository.getPersonById(personId) ?: return@launch
+
+                if (action == "com.example.ACTION_SHOW_REMINDER") {
+                    if (person.isReminderEnabled && person.phoneNumber.isNotEmpty()) {
+                        ReminderScheduler.showReminderNotification(context, person)
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    pendingResult.finish()
-                }
-            }
-        } else if (action == "com.example.ACTION_CHECK_CALL_LOG") {
-            val pendingResult = goAsync()
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val config = repository.getConfig() ?: return@launch
-                    val contactName = config.contactName
-                    val targetPhone = config.phoneNumber
+                } else if (action == "com.example.ACTION_CHECK_CALL_LOG") {
+                    val contactName = person.name
+                    val targetPhone = person.phoneNumber
 
                     if (targetPhone.isEmpty()) return@launch
 
@@ -62,8 +56,8 @@ class AlarmReceiver : BroadcastReceiver() {
                             set(Calendar.MILLISECOND, 0)
                         }
                         val todayStart = calendar.timeInMillis
-                        
-                        // We check outgoing calls placed today
+
+                        // Check outgoing calls placed today
                         val uri = CallLog.Calls.CONTENT_URI
                         val projection = arrayOf(
                             CallLog.Calls.NUMBER,
@@ -84,14 +78,13 @@ class AlarmReceiver : BroadcastReceiver() {
                         cursor?.use {
                             val numCol = it.getColumnIndex(CallLog.Calls.NUMBER)
                             val durCol = it.getColumnIndex(CallLog.Calls.DURATION)
-                            
-                            // Check custom columnIndex mapping safely
+
                             if (numCol >= 0 && durCol >= 0) {
                                 while (it.moveToNext()) {
                                     val number = it.getString(numCol) ?: ""
                                     val duration = it.getInt(durCol) // in seconds
                                     if (PhoneNumberUtils.compare(context, number, targetPhone)) {
-                                        if (duration >= config.minCallDurationSeconds) {
+                                        if (duration >= person.minCallDurationSeconds) {
                                             callVerified = true
                                             verifiedDuration = duration
                                             break
@@ -107,34 +100,35 @@ class AlarmReceiver : BroadcastReceiver() {
                         // Save a successful CallRecord
                         repository.addCallRecord(
                             CallRecord(
+                                personId = person.id,
+                                personName = contactName,
                                 timestamp = now,
+                                commType = "CALL",
                                 durationSeconds = verifiedDuration,
-                                isManual = false,
-                                callerName = contactName
+                                isManual = false
                             )
                         )
-                        
+
                         // Reschedule next formal reminder from now
-                        val updatedConfig = config.copy(
-                            lastCallTimestamp = now
+                        val updatedPerson = person.copy(
+                            lastContactTimestamp = now
                         )
-                        repository.saveConfig(updatedConfig)
-                        val nextTrigger = ReminderScheduler.scheduleNextAlarm(context, updatedConfig)
-                        repository.saveConfig(updatedConfig.copy(nextReminderTimestamp = nextTrigger))
+                        val nextTrigger = ReminderScheduler.scheduleNextAlarm(context, updatedPerson)
+                        repository.savePerson(updatedPerson.copy(nextReminderTimestamp = nextTrigger))
 
                         // Show success confirmation notification
-                        ReminderScheduler.showCallConfirmedNotification(context, contactName)
+                        ReminderScheduler.showCallConfirmedNotification(context, contactName, person.id)
                     } else {
                         // Verification failed. Notify user and snooze the alarm
-                        ReminderScheduler.showCallFailedNotification(context, contactName)
-                        val snoozeAt = ReminderScheduler.scheduleSnoozeAlarm(context, config.snoozeMinutes)
-                        repository.saveConfig(config.copy(nextReminderTimestamp = snoozeAt))
+                        ReminderScheduler.showCallFailedNotification(context, contactName, person.id)
+                        val snoozeAt = ReminderScheduler.scheduleSnoozeAlarm(context, person)
+                        repository.savePerson(person.copy(nextReminderTimestamp = snoozeAt))
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    pendingResult.finish()
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                pendingResult.finish()
             }
         }
     }

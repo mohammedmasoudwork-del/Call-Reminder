@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Call Reminder</string>
+    <string name="app_name">صلة</string>
     <string name="person_name_label">اسم الشخص</string>
     <string name="phone_number_label">رقم الهاتف</string>
     <string name="reminder_interval_label">تكرار التنبيه</string>

@@ -6,39 +6,41 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.*
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.R
 import com.example.data.CallRecord
-import com.example.data.ReminderConfig
+import com.example.data.Person
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -49,28 +51,16 @@ fun MainScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val configState by viewModel.config.collectAsStateWithLifecycle()
+    val people by viewModel.filteredPeopleList.collectAsStateWithLifecycle()
     val callHistory by viewModel.callHistory.collectAsStateWithLifecycle()
+    val pendingWhatsappPerson by viewModel.pendingWhatsAppConfirm.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 
-    // Form states
-    var contactName by remember { mutableStateOf("") }
-    var phoneNumber by remember { mutableStateOf("") }
-    var intervalDays by remember { mutableStateOf(1) }
-    var snoozeMinutes by remember { mutableStateOf(30) }
-    var minDurationSeconds by remember { mutableStateOf("30") }
+    var selectedTab by remember { mutableStateOf(0) }
+    var showAddEditDialog by remember { mutableStateOf(false) }
+    var personToEdit by remember { mutableStateOf<Person?>(null) }
 
-    // Synchronize form states when database config loads
-    LaunchedEffect(configState) {
-        configState?.let {
-            contactName = it.contactName
-            phoneNumber = it.phoneNumber
-            intervalDays = it.intervalDays
-            snoozeMinutes = it.snoozeMinutes
-            minDurationSeconds = it.minCallDurationSeconds.toString()
-        }
-    }
-
-    // Permission handling launcher
+    // Request permissions
     val requestPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -78,14 +68,13 @@ fun MainScreen(
         val readCall = permissions[android.Manifest.permission.READ_CALL_LOG] ?: true
 
         if (!postNotif) {
-            Toast.makeText(context, context.getString(R.string.permission_notif_denied), Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "لم يتم تفعيل الإشعارات، قد تفوتك تذكيرات التواصل!", Toast.LENGTH_LONG).show()
         }
         if (!readCall) {
-            Toast.makeText(context, context.getString(R.string.permission_call_log_denied), Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "لم يتم تفعيل صلاحية سجل المكالمات، ستحتاج لتسجيل نجاح تواصلك يدوياً.", Toast.LENGTH_LONG).show()
         }
     }
 
-    // Check and trigger permissions on launch
     LaunchedEffect(Unit) {
         val permissionsNeeded = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -105,157 +94,319 @@ fun MainScreen(
     LaunchedEffect(Unit) {
         viewModel.toastEvent.collect { event ->
             val message = when (event) {
-                "settings_saved" -> context.getString(R.string.settings_saved)
-                "phone_number_required" -> context.getString(R.string.phone_number_required)
-                "reminder_enabled" -> context.getString(R.string.reminder_status_enabled)
-                "reminder_disabled" -> context.getString(R.string.reminder_status_disabled)
-                "call_confirmed_manual" -> context.getString(R.string.call_confirmed_manual)
+                "person_saved" -> "تم حفظ بيانات الشخص بنجاح ✨"
+                "person_deleted" -> "تم حذف الشخص بنجاح"
+                "phone_number_required" -> "يرجى إضافة رقم الهاتف للتفعيل!"
+                "reminder_enabled" -> "تم تفعيل التنبيهات بنجاح 🔔"
+                "reminder_disabled" -> "تم إلغاء التنبيهات لهذا الشخص 🔕"
+                "call_confirmed_manual" -> "تم تسجيل التواصل بنجاح! طاب يومك ❤️"
+                "whatsapp_confirmed" -> "تم تسجيل التواصل عبر واتساب بنجاح! 🌸"
+                "whatsapp_snoozed" -> "تم تأجيل تذكير واتساب"
+                "whatsapp_not_installed" -> "تطبيق واتساب غير مثبت على هذا الجهاز!"
+                "history_cleared" -> "تم مسح سجل النشاط بنجاح"
                 else -> event
             }
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
         }
     }
 
-    // Enforce RTL Layout Direction explicitly for Arab support
+    // Enforce RTL explicitly for Arabian warmth
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Scaffold(
             topBar = {
-                CenterAlignedTopAppBar(
+                LargeTopAppBar(
                     title = {
-                        Text(
-                            text = stringResource(id = R.string.app_name),
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 24.sp
-                        )
+                        Column {
+                            Text(
+                                text = "صِلَة",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontSize = 32.sp
+                            )
+                            Text(
+                                text = "تواصل مع من تحب ولا تنسى صلة رحمك",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     },
-                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    colors = TopAppBarDefaults.largeTopAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background
                     ),
                     modifier = Modifier.testTag("app_bar")
                 )
             },
+            floatingActionButton = {
+                if (selectedTab == 0) {
+                    ExtendedFloatingActionButton(
+                        onClick = {
+                            personToEdit = null
+                            showAddEditDialog = true
+                        },
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        text = { Text("إضافة شخص", fontWeight = FontWeight.Bold) },
+                        modifier = Modifier.testTag("add_person_fab")
+                    )
+                }
+            },
             containerColor = MaterialTheme.colorScheme.background,
             modifier = modifier.fillMaxSize()
         ) { innerPadding ->
-            val config = configState
-            if (config == null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(innerPadding),
-                    contentAlignment = Alignment.Center
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                // Tab Selection Layout
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = MaterialTheme.colorScheme.background,
+                    contentColor = MaterialTheme.colorScheme.primary
                 ) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Home, contentDescription = null)
+                                Text("الأشخاص والمتابعة", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.List, contentDescription = null)
+                                Text("المؤشرات والنشاط", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    )
                 }
-            } else {
-                LazyColumn(
-                    contentPadding = PaddingValues(
-                        start = 16.dp,
-                        end = 16.dp,
-                        top = innerPadding.calculateTopPadding(),
-                        bottom = innerPadding.calculateBottomPadding() + 24.dp
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    // 1. Current Status Dashboard
-                    item {
-                        DashboardCard(config = config)
-                    }
 
-                    // 2. Settings Config Block
-                    item {
-                        SettingsCard(
-                            contactName = contactName,
-                            onContactNameChange = { contactName = it },
-                            phoneNumber = phoneNumber,
-                            onPhoneNumberChange = { phoneNumber = it },
-                            intervalDays = intervalDays,
-                            onIntervalDaysChange = { intervalDays = it },
-                            snoozeMinutes = snoozeMinutes,
-                            onSnoozeMinutesChange = { snoozeMinutes = it },
-                            minDurationSeconds = minDurationSeconds,
-                            onMinDurationSecondsChange = { minDurationSeconds = it },
-                            onSave = {
-                                val dur = minDurationSeconds.toIntOrNull() ?: 30
-                                viewModel.saveSettings(
-                                    contactName = contactName,
-                                    phoneNumber = phoneNumber,
-                                    intervalDays = intervalDays,
-                                    snoozeMinutes = snoozeMinutes,
-                                    minCallDurationSeconds = dur
-                                )
-                            }
-                        )
-                    }
-
-                    // 3. Operational Action Controls
-                    item {
-                        ActionControls(
-                            isEnabled = config.isReminderEnabled,
-                            phoneNumberValid = phoneNumber.trim().isNotEmpty(),
-                            onToggleEnable = {
-                                if (config.isReminderEnabled) {
-                                    viewModel.disableReminder()
-                                } else {
-                                    viewModel.enableReminder()
-                                }
-                            },
-                            onTestNotification = { viewModel.triggerTestNotification() },
-                            onMarkCalledToday = { viewModel.confirmCallToday() }
-                        )
-                    }
-
-                    // 4. Access Permission Alert Status
-                    item {
-                        PermissionAlertView(context = context, onGrantRequested = {
-                            val permissionsList = mutableListOf<String>()
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                permissionsList.add(android.Manifest.permission.POST_NOTIFICATIONS)
-                            }
-                            permissionsList.add(android.Manifest.permission.READ_CALL_LOG)
-                            requestPermissionLauncher.launch(permissionsList.toTypedArray())
-                        })
-                    }
-
-                    // 5. Historical Log Label
-                    item {
-                        Row(
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "سجل الاتصالات السابق",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 18.sp
+                // Main Content View Switcher
+                AnimatedContent(
+                    targetState = selectedTab,
+                    transitionSpec = {
+                        slideInHorizontally { width -> if (selectedTab == 0) width else -width } + fadeIn() togetherWith
+                                slideOutHorizontally { width -> if (selectedTab == 0) -width else width } + fadeOut()
+                    },
+                    label = "tab_switch"
+                ) { targetTab ->
+                    when (targetTab) {
+                        0 -> {
+                            PeopleTabContent(
+                                people = people,
+                                searchQuery = searchQuery,
+                                onSearchQueryChange = { viewModel.setSearchQuery(it) },
+                                onEditPerson = { person ->
+                                    personToEdit = person
+                                    showAddEditDialog = true
+                                },
+                                onToggleReminder = { person, enabled ->
+                                    viewModel.toggleReminder(person, enabled)
+                                },
+                                onCall = { person -> viewModel.triggerCall(context, person) },
+                                onWhatsApp = { person -> viewModel.triggerWhatsApp(context, person) },
+                                onManualConfirm = { person -> viewModel.triggerManualConfirm(person) },
+                                onTestNotification = { person -> viewModel.triggerTestNotification(person) }
                             )
-                            if (callHistory.isNotEmpty()) {
-                                Text(
-                                    text = "مسح السجل",
-                                    color = MaterialTheme.colorScheme.error,
-                                    fontSize = 14.sp,
-                                    modifier = Modifier
-                                        .clickable { viewModel.clearHistory() }
-                                        .padding(4.dp)
-                                        .testTag("clear_history_btn")
-                                )
-                            }
+                        }
+                        1 -> {
+                            InsightsTabContent(
+                                people = people,
+                                callHistory = callHistory,
+                                onClearHistory = { viewModel.clearAllHistory() },
+                                onRequestPermission = {
+                                    val permissionsList = mutableListOf<String>()
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        permissionsList.add(android.Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                    permissionsList.add(android.Manifest.permission.READ_CALL_LOG)
+                                    requestPermissionLauncher.launch(permissionsList.toTypedArray())
+                                }
+                            )
                         }
                     }
+                }
+            }
 
-                    // 6. Historical Listing Items / Empty State
-                    if (callHistory.isEmpty()) {
-                        item {
-                            EmptyHistoryCard()
+            // WhatsApp confirmation pop-up
+            pendingWhatsappPerson?.let { person ->
+                AlertDialog(
+                    onDismissRequest = { viewModel.confirmWhatsAppContact(person, false) },
+                    confirmButton = {
+                        Button(
+                            onClick = { viewModel.confirmWhatsAppContact(person, true) },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text("نعم، تم بنجاح")
                         }
-                    } else {
-                        items(callHistory) { record ->
-                            CallHistoryItem(record = record)
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { viewModel.confirmWhatsAppContact(person, false) }
+                        ) {
+                            Text("لا، لاحقاً", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    icon = { Icon(Icons.Default.Favorite, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                    title = { Text("تأكيد التواصل عبر واتساب", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Text(
+                            text = "هل نجح تواصلك مع ${person.name} باستخدام رسالة واتساب المجهزة؟",
+                            textAlign = TextAlign.Center
+                        )
+                    },
+                    shape = RoundedCornerShape(28.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                )
+            }
+
+            // Add/Edit Dialog sheet
+            if (showAddEditDialog) {
+                AddEditPersonDialog(
+                    person = personToEdit,
+                    onDismiss = { showAddEditDialog = false },
+                    onSave = { name, phone, avatar, commType, interval, snooze, minCall, msg, notes, enabled ->
+                        viewModel.savePerson(
+                            id = personToEdit?.id ?: 0,
+                            name = name,
+                            phoneNumber = phone,
+                            photoUri = avatar,
+                            preferredCommType = commType,
+                            intervalDays = interval,
+                            snoozeMinutes = snooze,
+                            minCallDurationSeconds = minCall,
+                            defaultWhatsAppMessage = msg,
+                            notes = notes,
+                            isReminderEnabled = enabled
+                        )
+                        showAddEditDialog = false
+                    },
+                    onDelete = personToEdit?.let {
+                        {
+                            viewModel.deletePerson(it)
+                            showAddEditDialog = false
                         }
                     }
+                )
+            }
+        }
+    }
+}
+
+// ---------------------- PEOPLE TAB ----------------------
+
+@Composable
+fun PeopleTabContent(
+    people: List<Person>,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onEditPerson: (Person) -> Unit,
+    onToggleReminder: (Person, Boolean) -> Unit,
+    onCall: (Person) -> Unit,
+    onWhatsApp: (Person) -> Unit,
+    onManualConfirm: (Person) -> Unit,
+    onTestNotification: (Person) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Polished Search bar
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            placeholder = { Text("البحث في الأهل والأقارب...") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+            trailingIcon = if (searchQuery.isNotEmpty()) {
+                {
+                    IconButton(onClick = { onSearchQueryChange("") }) {
+                        Icon(Icons.Default.Clear, contentDescription = null)
+                    }
+                }
+            } else null,
+            shape = RoundedCornerShape(24.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+                unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("search_field"),
+            singleLine = true
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (people.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(64.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                    )
+                    Text(
+                        text = if (searchQuery.isEmpty()) "لم تقم بإضافة أشخاص بعد!" else "لا توجد نتائج مطابقة لبحثك",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        fontWeight = FontWeight.Medium
+                    )
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            text = "اضغط على الزر بالأسفل لإضافة أول شخص تود تذكره.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+            }
+        } else {
+            // Priority list of check-in status
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(people, key = { it.id }) { person ->
+                    PersonCard(
+                        person = person,
+                        onClick = { onEditPerson(person) },
+                        onToggleReminder = { onToggleReminder(person, it) },
+                        onCall = { onCall(person) },
+                        onWhatsApp = { onWhatsApp(person) },
+                        onManualConfirm = { onManualConfirm(person) },
+                        onTestNotification = { onTestNotification(person) }
+                    )
+                }
+                item {
+                    Spacer(modifier = Modifier.height(84.dp)) // Extra padding for FAB overlay
                 }
             }
         }
@@ -263,375 +414,593 @@ fun MainScreen(
 }
 
 @Composable
-fun DashboardCard(config: ReminderConfig) {
-    val isCalledToday = isSameDay(config.lastCallTimestamp)
+fun PersonCard(
+    person: Person,
+    onClick: () -> Unit,
+    onToggleReminder: (Boolean) -> Unit,
+    onCall: () -> Unit,
+    onWhatsApp: () -> Unit,
+    onManualConfirm: () -> Unit,
+    onTestNotification: () -> Unit
+) {
+    val status = getCheckinStatus(person)
 
     Card(
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("dashboard_card"),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            .clickable(onClick = onClick)
+            .testTag("person_card_${person.id}")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .padding(16.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Column {
+                // Customized avatar with dynamic Material Initial backgrounds
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .background(getAvatarColor(person.photoUri), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        text = config.contactName,
-                        fontSize = 24.sp,
+                        text = person.name.take(1).uppercase(),
+                        color = Color.White,
                         fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = if (config.phoneNumber.isEmpty()) "لا يوجد رقم هاتف مسجل" else config.phoneNumber,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        fontSize = 20.sp
                     )
                 }
 
-                // Check Circle/Alert status sign
+                // Name and details
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = person.name,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        // Preferred Channel Icon Indicator
+                        Icon(
+                            imageVector = when (person.preferredCommType) {
+                                "WHATSAPP" -> Icons.Default.Send
+                                "CALL" -> Icons.Default.Phone
+                                else -> Icons.Default.Share
+                            },
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Text(
+                        text = "هاتف: ${person.phoneNumber}",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Text(
+                        text = "التكرار: كل ${getArabicDaysText(person.intervalDays)}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
+
+                // Alarm toggle switches
+                Switch(
+                    checked = person.isReminderEnabled,
+                    onCheckedChange = onToggleReminder,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier.scale(0.85f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Check-in Priority Alert status badge
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(status.backgroundColor.copy(alpha = 0.08f))
+                    .border(0.5.dp, status.backgroundColor.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(status.backgroundColor, CircleShape)
+                    )
+                    Text(
+                        text = status.label,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = status.textColor
+                    )
+                }
+                Text(
+                    text = if (person.lastContactTimestamp == 0L) "لم يتم التواصل بعد" else "آخر تواصل: " + formatRelativeDays(person.lastContactTimestamp),
+                    fontSize = 12.sp,
+                    color = status.textColor.copy(alpha = 0.9f)
+                )
+            }
+
+            // Optional note preview
+            if (person.notes.trim().isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "📝 " + person.notes,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                modifier = Modifier.padding(vertical = 12.dp)
+            )
+
+            // Dynamic interactive quick action row buttons
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                // Call quick launcher
+                if (person.preferredCommType == "CALL" || person.preferredCommType == "BOTH") {
+                    OutlinedButton(
+                        onClick = onCall,
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(38.dp)
+                    ) {
+                        Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("اتصل الآن", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // WhatsApp quick launcher
+                if (person.preferredCommType == "WHATSAPP" || person.preferredCommType == "BOTH") {
+                    Button(
+                        onClick = onWhatsApp,
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(38.dp)
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("مراسلة واتساب", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // Manual check todays action
+                IconButton(
+                    onClick = onManualConfirm,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "تم التواصل اليوم",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                // Small debug triggers notification
+                IconButton(
+                    onClick = onTestNotification,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Notifications,
+                        contentDescription = "تجربة إشعار",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---------------------- INSIGHTS / ACTIVITY TAB ----------------------
+
+@Composable
+fun InsightsTabContent(
+    people: List<Person>,
+    callHistory: List<CallRecord>,
+    onClearHistory: () -> Unit,
+    onRequestPermission: () -> Unit
+) {
+    val context = LocalContext.current
+    val now = System.currentTimeMillis()
+
+    // Calculate core analytical statistics based on specification requirements
+    val contactedThisWeekCount = remember(people, now) {
+        people.count { it.lastContactTimestamp >= now - (7L * 24 * 60 * 60 * 1000) && it.lastContactTimestamp > 0L }
+    }
+    val overdueMonthCount = remember(people, now) {
+        people.count {
+            val daysSince = (now - it.lastContactTimestamp) / (24 * 60 * 60 * 1000)
+            (it.lastContactTimestamp == 0L && it.isReminderEnabled) || (daysSince >= 30 && it.isReminderEnabled)
+        }
+    }
+    val avgMonthlyCountCalculated = remember(callHistory, now) {
+        // Total logs within last 30 days
+        val lastMonthLogs = callHistory.count { it.timestamp >= now - (30L * 24 * 60 * 60 * 1000) }
+        lastMonthLogs
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        contentPadding = PaddingValues(top = 16.dp, bottom = 48.dp)
+    ) {
+        // 1. Core Simple Statistics Dashboard Horizontal Grid
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "الإحصائيات والتحليلات",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 18.sp
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    StatCard(
+                        title = "تواصل هذا الأسبوع",
+                        value = contactedThisWeekCount.toString(),
+                        subtitle = "أشخاص مؤكدين",
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        textColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        icon = Icons.Default.Favorite,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatCard(
+                        title = "لم يتصلوا > شهر",
+                        value = overdueMonthCount.toString(),
+                        subtitle = "بحاجة صلة وتفقد",
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        textColor = MaterialTheme.colorScheme.onErrorContainer,
+                        icon = Icons.Default.Warning,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatCard(
+                        title = "معدل الشهري الكلي",
+                        value = avgMonthlyCountCalculated.toString(),
+                        subtitle = "عملية تواصل مؤكدة",
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        textColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        icon = Icons.Default.CheckCircle,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
+        // 2. Priority visual dashboard overview cards (لوحة المتابعة حسب الأولوية)
+        item {
+            PrioritySummaryView(people = people)
+        }
+
+        // 3. Operational Permission Status Alert info
+        item {
+            PermissionAlertView(context = context, onGrantRequested = onRequestPermission)
+        }
+
+        // 4. Activity Logs header label
+        item {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "سجل النشاط والتواصل التاريخي",
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontSize = 18.sp
+                )
+                if (callHistory.isNotEmpty()) {
+                    Text(
+                        text = "مسح السجل",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clickable { onClearHistory() }
+                            .padding(4.dp)
+                            .testTag("clear_history_btn")
+                    )
+                }
+            }
+        }
+
+        // 5. Historical List records
+        if (callHistory.isEmpty()) {
+            item {
+                EmptyHistoryCard()
+            }
+        } else {
+            items(callHistory) { record ->
+                DetailedHistoryItem(record = record)
+            }
+        }
+    }
+}
+
+@Composable
+fun StatCard(
+    title: String,
+    value: String,
+    subtitle: String,
+    color: Color,
+    textColor: Color,
+    icon: ImageVector,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = color),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = textColor.copy(alpha = 0.7f),
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = value,
+                fontWeight = FontWeight.Black,
+                fontSize = 24.sp,
+                color = textColor,
+                lineHeight = 24.sp
+            )
+            Text(
+                text = title,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = textColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                fontSize = 10.sp,
+                color = textColor.copy(alpha = 0.8f)
+            )
+        }
+    }
+}
+
+@Composable
+fun PrioritySummaryView(people: List<Person>) {
+    val overdue = remember(people) {
+        people.filter {
+            getCheckinStatus(it) is CheckinStatus.Overdue
+        }
+    }
+    val close = remember(people) {
+        people.filter {
+            getCheckinStatus(it) is CheckinStatus.Warning
+        }
+    }
+    val safe = remember(people) {
+        people.filter {
+            getCheckinStatus(it) is CheckinStatus.Safe
+        }
+    }
+
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "جاهزية الاتصال ومستويات المتابعة",
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                PriorityCategoryRow(
+                    label = "متأخر جداً في التواصل ⚠️",
+                    count = overdue.size,
+                    color = MaterialTheme.colorScheme.error,
+                    description = overdue.joinToString { it.name }.ifEmpty { "لا أحد للآن، أحسنت!" }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                PriorityCategoryRow(
+                    label = "يحتاج تواصل قريباً ⏳",
+                    count = close.size,
+                    color = Color(0xFFF2994A), // Orange warmth
+                    description = close.joinToString { it.name }.ifEmpty { "كل الأحباب مرويين بالوصال" }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+                PriorityCategoryRow(
+                    label = "تم التواصل مؤخراً ومطمئن ✅",
+                    count = safe.size,
+                    color = Color(0xFF27AE60), // Mint green
+                    description = safe.joinToString { it.name }.ifEmpty { "يرجى تفقد قائمة صلة رحمك" }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PriorityCategoryRow(
+    label: String,
+    count: Int,
+    color: Color,
+    description: String
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(modifier = Modifier.size(10.dp).background(color, CircleShape))
+                Text(text = label, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            }
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(color.copy(alpha = 0.12f))
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(text = "$count شخص", fontWeight = FontWeight.Black, color = color, fontSize = 12.sp)
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = description,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = 18.dp)
+        )
+    }
+}
+
+@Composable
+fun DetailedHistoryItem(record: CallRecord) {
+    val isWhatsapp = record.commType == "WHATSAPP"
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.5.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Box(
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(40.dp)
                         .background(
-                            if (isCalledToday) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f)
-                            else MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                            if (isWhatsapp) Color(0xFF25D366).copy(alpha = 0.12f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                             CircleShape
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = if (isCalledToday) Icons.Default.Favorite else Icons.Default.DateRange,
+                        imageVector = if (isWhatsapp) Icons.Default.Send else Icons.Default.Phone,
                         contentDescription = null,
-                        tint = if (isCalledToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                        modifier = Modifier.size(24.dp)
+                        tint = if (isWhatsapp) Color(0xFF25D366) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
                     )
                 }
-            }
 
-            HorizontalDivider(
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f),
-                modifier = Modifier.padding(vertical = 16.dp)
-            )
-
-            // Current state logs
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Reminder Switch Status
-                StateRow(
-                    label = "حالة التذكير تلقائيًا:",
-                    value = if (config.isReminderEnabled) "نشط ومفعّل" else "متوقّف حاليًا",
-                    isSuccess = config.isReminderEnabled
-                )
-
-                // Last verified Call time
-                StateRow(
-                    label = "آخر مكالمة تم تسجيلها:",
-                    value = formatDateTime(config.lastCallTimestamp),
-                    isHighlight = config.lastCallTimestamp > 0L
-                )
-
-                // Called today?
-                StateRow(
-                    label = "حالة الاتصال اليوم:",
-                    value = if (isCalledToday) "تم الاتصال بنجاح! ❤️" else "لم يتم الاتصال اليوم ⚠️",
-                    isSuccess = isCalledToday
-                )
-
-                // Next scheduled run trigger
-                if (config.isReminderEnabled && config.nextReminderTimestamp > 0L) {
-                    StateRow(
-                        label = "التنبيه التالي المجدول:",
-                        value = formatDateTime(config.nextReminderTimestamp),
-                        isHighlight = true
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun SettingsCard(
-    contactName: String,
-    onContactNameChange: (String) -> Unit,
-    phoneNumber: String,
-    onPhoneNumberChange: (String) -> Unit,
-    intervalDays: Int,
-    onIntervalDaysChange: (Int) -> Unit,
-    snoozeMinutes: Int,
-    onSnoozeMinutesChange: (Int) -> Unit,
-    minDurationSeconds: String,
-    onMinDurationSecondsChange: (String) -> Unit,
-    onSave: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("settings_card"),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "إعدادات الاتصال والمواعيد",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            // Name Input
-            OutlinedTextField(
-                value = contactName,
-                onValueChange = onContactNameChange,
-                label = { Text("اسم الشخص") },
-                maxLines = 1,
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("contact_name_input")
-            )
-
-            // Phone Input
-            OutlinedTextField(
-                value = phoneNumber,
-                onValueChange = onPhoneNumberChange,
-                label = { Text("رقم الهاتف") },
-                maxLines = 1,
-                leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("phone_number_input")
-            )
-
-            // Interval days Chips Selectors (Filter Chips M3)
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "تكرار التنبيه الدوري:",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    val intervals = listOf(
-                        1 to stringResource(R.string.every_day),
-                        2 to stringResource(R.string.every_2_days),
-                        7 to stringResource(R.string.every_week)
-                    )
-                    intervals.forEach { (days, label) ->
-                        val selected = intervalDays == days
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onIntervalDaysChange(days) },
-                            label = { Text(label, fontSize = 13.sp) },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier.testTag("interval_chip_$days")
-                        )
-                    }
-                }
-            }
-
-            // Snooze retry selection chips
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = "طلب تذكير إضافي في حالة تجاهل الإشعار:",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    val snoozes = listOf(
-                        30 to stringResource(R.string.snooze_30_min),
-                        60 to stringResource(R.string.snooze_1_hour),
-                        120 to stringResource(R.string.snooze_2_hours)
-                    )
-                    snoozes.forEach { (minutes, label) ->
-                        val selected = snoozeMinutes == minutes
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onSnoozeMinutesChange(minutes) },
-                            label = { Text(label, fontSize = 13.sp) },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier.testTag("snooze_chip_$minutes")
-                        )
-                    }
-                }
-            }
-
-            // Min Call Duration text field
-            OutlinedTextField(
-                value = minDurationSeconds,
-                onValueChange = { onMinDurationSecondsChange(it.filter { char -> char.isDigit() }) },
-                label = { Text("أقل مدة مكالمة لاعتبار الاتصال ناجحًا (ثانية)") },
-                maxLines = 1,
-                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-                ),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("min_duration_input")
-            )
-
-            // Submit Button
-            Button(
-                onClick = onSave,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("save_settings_btn")
-            ) {
-                Icon(Icons.Default.Check, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("حفظ البيانات الكليّة", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            }
-        }
-    }
-}
-
-@Composable
-fun ActionControls(
-    isEnabled: Boolean,
-    phoneNumberValid: Boolean,
-    onToggleEnable: () -> Unit,
-    onTestNotification: () -> Unit,
-    onMarkCalledToday: () -> Unit
-) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("action_controls_card")
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "التحكم في المنبّه اليدوي والتلقائي",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            // Enable / Disable Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Main switch button
-                Button(
-                    onClick = onToggleEnable,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isEnabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("toggle_reminder_btn")
-                ) {
-                    Icon(
-                        imageVector = if (isEnabled) Icons.Default.Close else Icons.Default.Notifications,
-                        contentDescription = null
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
+                Column {
                     Text(
-                        text = if (isEnabled) "إيقاف التذكير" else "تفعيل التذكير",
+                        text = "اطمأننت على " + record.personName,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
-                }
-
-                // Quick test alarm triggers action
-                OutlinedButton(
-                    onClick = onTestNotification,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("test_notification_btn")
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("اختبار الإشعار", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = formatDateTime(record.timestamp),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
                 }
             }
 
-            // Quick Mark-as-completed Today (أنا اتصلت اليوم)
-            Button(
-                onClick = onMarkCalledToday,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                ),
-                shape = RoundedCornerShape(12.dp),
+            // Record verification type indicator
+            val tagColor = if (isWhatsapp) Color(0xFF25D366) else MaterialTheme.colorScheme.primary
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("manual_confirm_btn")
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(tagColor.copy(alpha = 0.08f))
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Favorite,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "لقد اتصلت واطمأننت عليها اليوم! ❤️",
-                    color = MaterialTheme.colorScheme.onSecondary,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 15.sp
+                    text = if (isWhatsapp) "رسالة واتساب" else if (record.isManual) "اتصال يدوي" else "اتصال مؤكد (${record.durationSeconds} ث)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = tagColor
                 )
             }
         }
@@ -682,7 +1051,7 @@ fun PermissionAlertView(
 
                 if (!postNotifGranted) {
                     Text(
-                        text = "⚠️ صلاحية الإشعارات غير مفعلة. يرجى تفعيلها حتى يذكرك تطبيق Call Reminder بالاتصال تلقائيًا.",
+                        text = "⚠️ صلاحية الإشعارات غير مفعلة. يرجى تفعيلها حتى يذكرك تطبيق صِلَة بالاتصال تلقائيًا.",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
                     )
@@ -704,82 +1073,6 @@ fun PermissionAlertView(
                 ) {
                     Text("منح الصلاحيات الآن", fontSize = 13.sp)
                 }
-            }
-        }
-    }
-}
-
-@Composable
-fun CallHistoryItem(record: CallRecord) {
-    Card(
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("call_history_item"),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(
-                            if (record.isManual) MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)
-                            else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f),
-                            CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (record.isManual) Icons.Default.Favorite else Icons.Default.Phone,
-                        contentDescription = null,
-                        tint = if (record.isManual) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                Column {
-                    Text(
-                        text = "اطمأننت على " + record.callerName,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = formatDateTime(record.timestamp),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
-            }
-
-            // Tag indicator (Manual vs Automatic check)
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (record.isManual) MaterialTheme.colorScheme.secondary.copy(alpha = 0.1f)
-                        else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.1f)
-                    )
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    text = if (record.isManual) "يدويّ" else "تأكيد تلقائي (" + record.durationSeconds + "ث)",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (record.isManual) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary
-                )
             }
         }
     }
@@ -818,42 +1111,356 @@ fun EmptyHistoryCard() {
     }
 }
 
+// ---------------------- ADD / EDIT DIAOLOG ----------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StateRow(label: String, value: String, isSuccess: Boolean = false, isHighlight: Boolean = false) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-        )
-        Text(
-            text = value,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
-            color = when {
-                isSuccess -> MaterialTheme.colorScheme.tertiary
-                isHighlight -> MaterialTheme.colorScheme.primary
-                else -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.9f)
+fun AddEditPersonDialog(
+    person: Person?,
+    onDismiss: () -> Unit,
+    onSave: (
+        name: String,
+        phone: String,
+        avatar: String,
+        commType: String,
+        interval: Int,
+        snooze: Int,
+        minCall: Int,
+        whatsappMsg: String,
+        notes: String,
+        enabled: Boolean
+    ) -> Unit,
+    onDelete: (() -> Unit)?
+) {
+    var name by remember { mutableStateOf(person?.name ?: "") }
+    var phone by remember { mutableStateOf(person?.phoneNumber ?: "") }
+    var avatar by remember { mutableStateOf(person?.photoUri ?: "avatar_1") }
+    var commType by remember { mutableStateOf(person?.preferredCommType ?: "CALL") }
+    var interval by remember { mutableStateOf(person?.intervalDays ?: 1) }
+    var snooze by remember { mutableStateOf(person?.snoozeMinutes ?: 30) }
+    var minCall by remember { mutableStateOf(person?.minCallDurationSeconds?.toString() ?: "30") }
+    var whatsappMsg by remember { mutableStateOf(person?.defaultWhatsAppMessage ?: "السلام عليكم، كيف حالك؟ ❤️") }
+    var notes by remember { mutableStateOf(person?.notes ?: "") }
+    var isEnabled by remember { mutableStateOf(person?.isReminderEnabled ?: true) }
+
+    var showError by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.trim().isEmpty() || phone.trim().isEmpty()) {
+                        showError = true
+                    } else {
+                        onSave(
+                            name,
+                            phone,
+                            avatar,
+                            commType,
+                            interval,
+                            snooze,
+                            minCall.toIntOrNull() ?: 30,
+                            whatsappMsg,
+                            notes,
+                            isEnabled
+                        )
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("حفظ البيانات")
             }
-        )
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onDelete != null) {
+                    TextButton(
+                        onClick = onDelete,
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("حذف الشخص")
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("إلغاء", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        title = {
+            Text(
+                text = if (person == null) "إضافة صلة تواصل جديدة" else "تعديل الملف ومواعيد الوصل",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        },
+        shape = RoundedCornerShape(28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("add_edit_dialog"),
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                if (showError) {
+                    Text(
+                        text = "الرجاء تعبئة الاسم ورقم الهاتف للوصل!",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
+                }
+
+                // 1. Name Input
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("الاسم") },
+                    maxLines = 1,
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth().testTag("add_contact_name_input")
+                )
+
+                // 2. Phone Input
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text("رقم الهاتف") },
+                    placeholder = { Text("مثال: 01123456789") },
+                    maxLines = 1,
+                    leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth().testTag("add_phone_number_input")
+                )
+
+                // 3. Avatar selection slider / Preset picker chips
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("لون الرمز التعريفي:", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf("avatar_1", "avatar_2", "avatar_3", "avatar_4", "avatar_5").forEach { av ->
+                            val selected = avatar == av
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(getAvatarColor(av))
+                                    .border(
+                                        width = if (selected) 3.dp else 0.dp,
+                                        color = if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                                        shape = CircleShape
+                                    )
+                                    .clickable { avatar = av }
+                            )
+                        }
+                    }
+                }
+
+                // 4. Comm Preference Type segmented row (CALL, WHATSAPP, BOTH)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("نوع التواصل المفضل:", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf(
+                            "CALL" to "اتصال هاتفي",
+                            "WHATSAPP" to "واتساب فقط",
+                            "BOTH" to "اتصال أو واتساب"
+                        ).forEach { (type, title) ->
+                            val selected = commType == type
+                            FilterChip(
+                                selected = selected,
+                                onClick = { commType = type },
+                                label = { Text(title, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+
+                // Show default Whatsapp message template field if WHATSAPP or BOTH
+                if (commType == "WHATSAPP" || commType == "BOTH") {
+                    OutlinedTextField(
+                        value = whatsappMsg,
+                        onValueChange = { whatsappMsg = it },
+                        label = { Text("رسالة الواتساب الافتراضية") },
+                        maxLines = 3,
+                        placeholder = { Text("أكتب رسالتك لفتحها تلقائياً عند النقر...") },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = MaterialTheme.colorScheme.secondary),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // 5. Interval Selection Dropdown/Chips
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("تكرار التنبيه الدوري للاطمئنان:", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf(
+                            1 to "يومي",
+                            2 to "يومين",
+                            7 to "أسبوعي",
+                            14 to "كل ١٤ يوم",
+                            30 to "شهري"
+                        ).forEach { (days, label) ->
+                            val selected = interval == days
+                            FilterChip(
+                                selected = selected,
+                                onClick = { interval = days },
+                                label = { Text(label, fontSize = 11.sp) },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 6. Snooze & Call parameters
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("مدة إعادة التذكير (في حال التجاهل):", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf(
+                            30 to "٣٠ دقيقة",
+                            60 to "ساعة",
+                            120 to "ساعتين"
+                        ).forEach { (minutes, label) ->
+                            val selected = snooze == minutes
+                            FilterChip(
+                                selected = selected,
+                                onClick = { snooze = minutes },
+                                label = { Text(label, fontSize = 11.sp) },
+                                shape = RoundedCornerShape(14.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Min Call verification duration
+                if (commType == "CALL" || commType == "BOTH") {
+                    OutlinedTextField(
+                        value = minCall,
+                        onValueChange = { minCall = it.filter { char -> char.isDigit() } },
+                        label = { Text("الحد الأدنى للمكالمة الناجحة (بالثواني)") },
+                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // 7. Optional Notes field
+                OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("ملاحظات اختيارية") },
+                    placeholder = { Text("مثال: الأوقات المفضلة، تفاصيل عن العائلة...") },
+                    maxLines = 3,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // 8. Enabler toggle status
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("تنبيهات المتابعة التلقائية مفعلة؟", fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    Switch(checked = isEnabled, onCheckedChange = { isEnabled = it })
+                }
+            }
+        }
+    )
+}
+
+// ---------------------- UTILITIES & FORMATTING ----------------------
+
+sealed class CheckinStatus(val label: String, val backgroundColor: Color, val textColor: Color) {
+    data class Overdue(val daysOver: Int) : CheckinStatus("متأخر جداً في التواصل ⚠️", Color(0xFFEB5757), Color(0xFFC0392B))
+    data class Warning(val daysLeft: Int) : CheckinStatus("يحتاج تواصل قريباً ⏳", Color(0xFFF2994A), Color(0xFFD35400))
+    data class Safe(val daysRecent: Int) : CheckinStatus("تم التواصل معه مؤخراً ✅", Color(0xFF27AE60), Color(0xFF1E8449))
+}
+
+fun getCheckinStatus(person: Person): CheckinStatus {
+    if (person.lastContactTimestamp == 0L) {
+        return CheckinStatus.Overdue(999)
+    }
+    val elapsedMillis = System.currentTimeMillis() - person.lastContactTimestamp
+    val elapsedDays = (elapsedMillis / (24 * 60 * 60 * 1000)).toInt()
+
+    return when {
+        elapsedDays >= person.intervalDays * 1.5 -> CheckinStatus.Overdue(elapsedDays - person.intervalDays)
+        elapsedDays >= person.intervalDays -> CheckinStatus.Warning(person.intervalDays * 2 - elapsedDays)
+        else -> CheckinStatus.Safe(elapsedDays)
     }
 }
 
-// Utility conversion helper to verify calendar day equality
-fun isSameDay(timestamp: Long): Boolean {
-    if (timestamp == 0L) return false
-    val calChecked = Calendar.getInstance().apply { timeInMillis = timestamp }
-    val calToday = Calendar.getInstance()
-    return calChecked.get(Calendar.YEAR) == calToday.get(Calendar.YEAR) &&
-            calChecked.get(Calendar.DAY_OF_YEAR) == calToday.get(Calendar.DAY_OF_YEAR)
+fun formatRelativeDays(timestamp: Long): String {
+    val distanceMillis = System.currentTimeMillis() - timestamp
+    val distanceDays = (distanceMillis / (24 * 60 * 60 * 1000)).toInt()
+
+    return when {
+        distanceDays <= 0 -> "اليوم"
+        distanceDays == 1 -> "منذ يوم"
+        distanceDays == 2 -> "منذ يومين"
+        distanceDays in 3..10 -> "منذ $distanceDays أيام"
+        else -> "منذ $distanceDays يوم"
+    }
 }
 
-// Format Unix Timestamp into clean localized Arabic style
+fun getArabicDaysText(days: Int): String {
+    return when (days) {
+        1 -> "يوم"
+        2 -> "يومين"
+        7 -> "أسبوع"
+        14 -> "أسبوعين"
+        30 -> "شهر"
+        else -> "$days يوم"
+    }
+}
+
+fun getAvatarColor(photoUri: String): Color {
+    return when (photoUri) {
+        "avatar_1" -> Color(0xFFE74C3C) // Cozy Red
+        "avatar_2" -> Color(0xFF9B59B6) // Purple royalty
+        "avatar_3" -> Color(0xFF3498DB) // Ocean blue
+        "avatar_4" -> Color(0xFF16A085) // Sage teal
+        "avatar_5" -> Color(0xFFF1C40F) // Sunbeam yellow
+        else -> Color(0xFF7F8C8D) // Warm grey slate
+    }
+}
+
 fun formatDateTime(timestamp: Long): String {
     if (timestamp == 0L) return "لا يوجد مكالمات مسجلة"
     val sdf = SimpleDateFormat("yyyy/MM/dd hh:mm a", Locale("ar"))

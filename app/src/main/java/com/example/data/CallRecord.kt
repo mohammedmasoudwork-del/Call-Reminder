@@ -6,8 +6,10 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "call_records")
 data class CallRecord(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val personId: Int,
+    val personName: String, // Cached snapshot name for simplicity or safety if person is deleted
     val timestamp: Long = System.currentTimeMillis(),
-    val durationSeconds: Int = 0,
-    val isManual: Boolean = false,
-    val callerName: String = "أختي"
+    val commType: String = "CALL", // "CALL" or "WHATSAPP"
+    val durationSeconds: Int = 0, // Used for automagic physical call log checks
+    val isManual: Boolean = false // Was it manually confirmed or automatically checked?
 )

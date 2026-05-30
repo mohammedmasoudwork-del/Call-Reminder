@@ -16,10 +16,11 @@ import kotlinx.coroutines.launch
 class NotificationActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
+        val personId = intent.getIntExtra("PERSON_ID", -1)
+        if (personId == -1) return
+
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        
-        // Dismiss the reminder notification ASAP
-        notificationManager.cancel(ReminderScheduler.NOTIFICATION_ID)
+        notificationManager.cancel(personId) // Dismiss the alarm notification specifically
 
         val db = AppDatabase.getDatabase(context)
         val repository = ReminderRepository(db.reminderDao())
@@ -27,58 +28,86 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val config = repository.getConfig() ?: return@launch
+                val person = repository.getPersonById(personId) ?: return@launch
 
                 when (action) {
                     "com.example.ACTION_CALL_NOW" -> {
-                        val phoneNumber = intent.getStringExtra("PHONE_NUMBER") ?: config.phoneNumber
+                        val phoneNumber = person.phoneNumber
                         if (phoneNumber.isNotEmpty()) {
-                            // Open dialer safely (ACTION_DIAL does not call automatically, requires user approval)
+                            // Open dialer safely
                             val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")).apply {
                                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
                             }
                             context.startActivity(dialIntent)
-                            
-                            // Schedule a verification check in 90 seconds
-                            ReminderScheduler.scheduleCallLogCheck(context)
+
+                            // Schedule verification check in 90 seconds
+                            ReminderScheduler.scheduleCallLogCheck(context, person)
                         } else {
                             CoroutineScope(Dispatchers.Main).launch {
                                 Toast.makeText(context, "لم يتم العثور على رقم هاتف متاح!", Toast.LENGTH_LONG).show()
                             }
                         }
                     }
-                    "com.example.ACTION_SNOOZE" -> {
-                        val snoozeMinutes = config.snoozeMinutes
-                        val nextTrigger = ReminderScheduler.scheduleSnoozeAlarm(context, snoozeMinutes)
-                        repository.saveConfig(config.copy(nextReminderTimestamp = nextTrigger))
-                        
-                        CoroutineScope(Dispatchers.Main).launch {
-                            Toast.makeText(context, "تم تأجيل التذكير لمدّة $snoozeMinutes دقيقة", Toast.LENGTH_SHORT).show()
+
+                    "com.example.ACTION_SEND_WHATSAPP" -> {
+                        val phoneNumber = person.phoneNumber
+                        val messageText = person.defaultWhatsAppMessage
+                        if (phoneNumber.isNotEmpty()) {
+                            // Trim whitespace and special characters from phone number for Whatsapp formatting
+                            var cleanPhone = phoneNumber.replace("+", "").replace(" ", "").replace("-", "")
+                            // Ensure there is some country prefix if needed (we'll log as is, or instruct users to type country suffix)
+                            val whatsappUri = "https://api.whatsapp.com/send?phone=$cleanPhone&text=${Uri.encode(messageText)}"
+                            val whatsappIntent = Intent(Intent.ACTION_VIEW, Uri.parse(whatsappUri)).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            }
+
+                            // Store "Pending WhatsApp Confirmation" in Shared Preferences
+                            val sharedPrefs = context.getSharedPreferences("call_reminder_prefs", Context.MODE_PRIVATE)
+                            sharedPrefs.edit().putInt("PENDING_WHATSAPP_PERSON_ID", person.id).apply()
+
+                            try {
+                                context.startActivity(whatsappIntent)
+                            } catch (e: Exception) {
+                                CoroutineScope(Dispatchers.Main).launch {
+                                    Toast.makeText(context, "تطبيق واتساب غير مثبت على هذا الجهاز!", Toast.LENGTH_LONG).show()
+                                }
+                            }
                         }
                     }
+
+                    "com.example.ACTION_SNOOZE" -> {
+                        val snoozeAt = ReminderScheduler.scheduleSnoozeAlarm(context, person)
+                        repository.savePerson(person.copy(nextReminderTimestamp = snoozeAt))
+
+                        CoroutineScope(Dispatchers.Main).launch {
+                            Toast.makeText(context, "تم تأجيل تذكير ${person.name} لمدّة ${person.snoozeMinutes} دقيقة", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+
                     "com.example.ACTION_CONFIRM_CALLED" -> {
                         val now = System.currentTimeMillis()
-                        // 1. Log manual call success
+                        // 1. Log manual contact success
+                        val isWhatsapp = (person.preferredCommType == "WHATSAPP")
                         repository.addCallRecord(
                             CallRecord(
+                                personId = person.id,
+                                personName = person.name,
                                 timestamp = now,
-                                durationSeconds = 0, // Manual entries have 0 duration
-                                isManual = true,
-                                callerName = config.contactName
+                                commType = if (isWhatsapp) "WHATSAPP" else "CALL",
+                                durationSeconds = 0,
+                                isManual = true
                             )
                         )
-                        
-                        // 2. Reschedule standard reminder
-                        val updatedConfig = config.copy(
-                            lastCallTimestamp = now
-                        )
-                        repository.saveConfig(updatedConfig)
-                        val nextTrigger = ReminderScheduler.scheduleNextAlarm(context, updatedConfig)
-                        repository.saveConfig(updatedConfig.copy(nextReminderTimestamp = nextTrigger))
 
-                        // 3. Inform user using Toast
+                        // 2. Reschedule standard reminder
+                        val updatedPerson = person.copy(
+                            lastContactTimestamp = now
+                        )
+                        val nextTrigger = ReminderScheduler.scheduleNextAlarm(context, updatedPerson)
+                        repository.savePerson(updatedPerson.copy(nextReminderTimestamp = nextTrigger))
+
                         CoroutineScope(Dispatchers.Main).launch {
-                            Toast.makeText(context, "تمام، تم تسجيل الاتصال ❤️", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "تمام، تم تأكيد وتوثيق التواصل مع ${person.name} ❤️", Toast.LENGTH_LONG).show()
                         }
                     }
                 }

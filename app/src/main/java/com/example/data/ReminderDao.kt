@@ -6,14 +6,23 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface ReminderDao {
 
-    @Query("SELECT * FROM reminder_config WHERE id = 1 LIMIT 1")
-    fun getConfigFlow(): Flow<ReminderConfig?>
+    @Query("SELECT * FROM people ORDER BY name ASC")
+    fun getAllPeopleFlow(): Flow<List<Person>>
 
-    @Query("SELECT * FROM reminder_config WHERE id = 1 LIMIT 1")
-    suspend fun getConfig(): ReminderConfig?
+    @Query("SELECT * FROM people")
+    suspend fun getAllPeopleList(): List<Person>
+
+    @Query("SELECT * FROM people WHERE id = :id LIMIT 1")
+    suspend fun getPersonById(id: Int): Person?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertConfig(config: ReminderConfig)
+    suspend fun insertPerson(person: Person): Long
+
+    @Update
+    suspend fun updatePerson(person: Person)
+
+    @Delete
+    suspend fun deletePerson(person: Person)
 
     @Query("SELECT * FROM call_records ORDER BY timestamp DESC")
     fun getAllCallRecordsFlow(): Flow<List<CallRecord>>
@@ -23,4 +32,7 @@ interface ReminderDao {
 
     @Query("DELETE FROM call_records")
     suspend fun clearCallHistory()
+
+    @Query("DELETE FROM call_records WHERE personId = :personId")
+    suspend fun clearCallHistoryForPerson(personId: Int)
 }

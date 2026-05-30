@@ -9,19 +9,17 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import com.example.data.ReminderConfig
-import java.util.Calendar
+import com.example.data.Person
 
 object ReminderScheduler {
 
-    const val NOTIFICATION_ID = 1002
-    const val CHANNEL_ID = "call_reminder_channel"
-    const val ALARM_REQ_CODE = 1001
+    const val CHANNEL_ID = "multi_person_reminder_channel"
+    const val CHECK_CALL_LOG_OFFSET = 1000000
 
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "Call Reminders"
-            val descriptionText = "Notifications for call check-ins"
+            val name = "تذكير صلة الرحم والتواصل"
+            val descriptionText = "إشعارات للتذكير بالاطمئنان على الأهل والأصدقاء"
             val importance = NotificationManager.IMPORTANCE_HIGH
             val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
                 description = descriptionText
@@ -31,32 +29,33 @@ object ReminderScheduler {
         }
     }
 
-    // Schedule next regular alarm based on interval days and last call timestamp
-    fun scheduleNextAlarm(context: Context, config: ReminderConfig): Long {
-        if (!config.isReminderEnabled || config.phoneNumber.isEmpty()) {
-            cancelAlarm(context)
+    // Schedule next regular alarm for a specific person
+    fun scheduleNextAlarm(context: Context, person: Person): Long {
+        if (!person.isReminderEnabled || person.phoneNumber.isEmpty()) {
+            cancelAlarm(context, person)
             return 0L
         }
 
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.example.ACTION_SHOW_REMINDER"
+            putExtra("PERSON_ID", person.id)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            ALARM_REQ_CODE,
+            person.id,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val frequencyMillis = config.intervalDays.toLong() * 24 * 60 * 60 * 1000
-        var triggerAtMillis = config.lastCallTimestamp + frequencyMillis
+        val frequencyMillis = person.intervalDays.toLong() * 24 * 60 * 60 * 1000
+        var triggerAtMillis = person.lastContactTimestamp + frequencyMillis
 
         val now = System.currentTimeMillis()
         if (triggerAtMillis <= now) {
-            // If never called or last call was long ago, schedule starting from today/now
-            triggerAtMillis = if (config.lastCallTimestamp == 0L) {
-                now + 10 * 1000 // Trigger 10 seconds from now as test/first run or tomorrow. Let's do a short buffer (15 seconds)
+            // Setup first trigger with a short delay if never called, otherwise keep standard cycle
+            triggerAtMillis = if (person.lastContactTimestamp == 0L) {
+                now + 20 * 1000 // Trigger in 20 seconds as a smooth initial setup / testing
             } else {
                 var next = triggerAtMillis
                 while (next <= now) {
@@ -66,67 +65,81 @@ object ReminderScheduler {
             }
         }
 
-        // Use setAndAllowWhileIdle to be battery-saving but reliable
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            triggerAtMillis,
-            pendingIntent
-        )
+        try {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         return triggerAtMillis
     }
 
-    // Schedule snooze alarm (e.g. after 30 minutes, 1 hour)
-    fun scheduleSnoozeAlarm(context: Context, snoozeMinutes: Int): Long {
+    // Schedule snooze alarm for a specific person
+    fun scheduleSnoozeAlarm(context: Context, person: Person): Long {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.example.ACTION_SHOW_REMINDER"
+            putExtra("PERSON_ID", person.id)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            ALARM_REQ_CODE,
+            person.id,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val triggerAtMillis = System.currentTimeMillis() + snoozeMinutes.toLong() * 60 * 1000
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            triggerAtMillis,
-            pendingIntent
-        )
+        val triggerAtMillis = System.currentTimeMillis() + person.snoozeMinutes.toLong() * 60 * 1000
+        try {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         return triggerAtMillis
     }
 
-    // Schedule delayed check of call log (e.g. 90 seconds after clicking "Call Now")
-    fun scheduleCallLogCheck(context: Context) {
+    // Schedule delayed call log check for a specific person (e.g. 90 seconds after "Call Now")
+    fun scheduleCallLogCheck(context: Context, person: Person) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.example.ACTION_CHECK_CALL_LOG"
+            putExtra("PERSON_ID", person.id)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            1003,
+            person.id + CHECK_CALL_LOG_OFFSET,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val triggerAtMillis = System.currentTimeMillis() + 90 * 1000 // 90 seconds delay
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            triggerAtMillis,
-            pendingIntent
-        )
+        val triggerAtMillis = System.currentTimeMillis() + 90 * 1000 // 90 seconds check window
+        try {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                triggerAtMillis,
+                pendingIntent
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
-    // Cancel any scheduled reminder alarm
-    fun cancelAlarm(context: Context) {
+    // Cancel dynamic alarm for a person
+    fun cancelAlarm(context: Context, person: Person) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             action = "com.example.ACTION_SHOW_REMINDER"
+            putExtra("PERSON_ID", person.id)
         }
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            ALARM_REQ_CODE,
+            person.id,
             intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
         )
@@ -134,97 +147,174 @@ object ReminderScheduler {
             alarmManager.cancel(pendingIntent)
             pendingIntent.cancel()
         }
+
+        // Cancel call log checker as well
+        val logIntent = Intent(context, AlarmReceiver::class.java).apply {
+            action = "com.example.ACTION_CHECK_CALL_LOG"
+            putExtra("PERSON_ID", person.id)
+        }
+        val logPendingIntent = PendingIntent.getBroadcast(
+            context,
+            person.id + CHECK_CALL_LOG_OFFSET,
+            logIntent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+        if (logPendingIntent != null) {
+            alarmManager.cancel(logPendingIntent)
+            logPendingIntent.cancel()
+        }
     }
 
-    // Build and show the primary reminder notification
-    fun showReminderNotification(context: Context, config: ReminderConfig) {
+    // Create and trigger the specific notification
+    fun showReminderNotification(context: Context, person: Person) {
         createNotificationChannel(context)
 
-        // Action 1: Call Now (Opens NotificationActionReceiver)
-        val callIntent = Intent(context, NotificationActionReceiver::class.java).apply {
-            action = "com.example.ACTION_CALL_NOW"
-            putExtra("PHONE_NUMBER", config.phoneNumber)
-        }
-        val callPendingIntent = PendingIntent.getBroadcast(
-            context,
-            201,
-            callIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Action 2: Snooze (Remember later)
+        // Setup common Actions
+        // Snooze Action
         val snoozeIntent = Intent(context, NotificationActionReceiver::class.java).apply {
             action = "com.example.ACTION_SNOOZE"
+            putExtra("PERSON_ID", person.id)
         }
         val snoozePendingIntent = PendingIntent.getBroadcast(
             context,
-            202,
+            person.id * 10 + 1,
             snoozeIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Action 3: I Called
+        // Manual Done Confirm action
         val doneIntent = Intent(context, NotificationActionReceiver::class.java).apply {
             action = "com.example.ACTION_CONFIRM_CALLED"
+            putExtra("PERSON_ID", person.id)
         }
         val donePendingIntent = PendingIntent.getBroadcast(
             context,
-            203,
+            person.id * 10 + 2,
             doneIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = "اطمن على أختك"
-        val body = "عدى وقت كفاية، اتصل بها واطمن عليها ❤️"
+        // Content activity back intent
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+            putExtra("PERSON_ID", person.id)
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            person.id,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.sym_action_call) // Default material phone icon as backup
-            .setContentTitle(title)
-            .setContentText(body)
+            .setSmallIcon(android.R.drawable.sym_action_call)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
-            .setContentIntent(
-                PendingIntent.getActivity(
-                    context,
-                    0,
-                    context.packageManager.getLaunchIntentForPackage(context.packageName),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-            )
-            .addAction(android.R.drawable.ic_menu_call, "اتصل الآن", callPendingIntent)
-            .addAction(android.R.drawable.ic_menu_recent_history, "ذكرني لاحقًا", snoozePendingIntent)
-            .addAction(android.R.drawable.checkbox_on_background, "أنا اتصلت", donePendingIntent)
+            .setContentIntent(contentPendingIntent)
 
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(NOTIFICATION_ID, builder.build())
+        // Switch headers & customized buttons based on contact preference
+        val relationName = person.name
+        val contactType = person.preferredCommType
+
+        if (contactType == "WHATSAPP") {
+            builder.setContentTitle("حان وقت التواصل مع $relationName")
+            builder.setContentText("أرسل رسالة واتساب للاطمئنان عليها اليوم ❤️")
+
+            val whatsappIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = "com.example.ACTION_SEND_WHATSAPP"
+                putExtra("PERSON_ID", person.id)
+            }
+            val whatsappPendingIntent = PendingIntent.getBroadcast(
+                context,
+                person.id * 10 + 3,
+                whatsappIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            builder.addAction(android.R.drawable.ic_menu_send, "إرسال واتساب", whatsappPendingIntent)
+            builder.addAction(android.R.drawable.checkbox_on_background, "أنا تواصلت", donePendingIntent)
+            builder.addAction(android.R.drawable.ic_menu_recent_history, "ذكرني لاحقًا", snoozePendingIntent)
+
+        } else if (contactType == "CALL") {
+            builder.setContentTitle("اطمن على $relationName")
+            builder.setContentText("عدى وقت كفاية، اتصل بها للاطمئنان عليها ❤️")
+
+            val callIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = "com.example.ACTION_CALL_NOW"
+                putExtra("PERSON_ID", person.id)
+            }
+            val callPendingIntent = PendingIntent.getBroadcast(
+                context,
+                person.id * 10 + 4,
+                callIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            builder.addAction(android.R.drawable.ic_menu_call, "اتصل الآن", callPendingIntent)
+            builder.addAction(android.R.drawable.checkbox_on_background, "أنا تواصلت", donePendingIntent)
+            builder.addAction(android.R.drawable.ic_menu_recent_history, "ذكرني لاحقًا", snoozePendingIntent)
+
+        } else { // BOTH
+            builder.setContentTitle("تواصل واطمن على $relationName")
+            builder.setContentText("اتصل أو أرسل رسالة واتساب لصلة رحمك اليوم ❤️")
+
+            val callIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = "com.example.ACTION_CALL_NOW"
+                putExtra("PERSON_ID", person.id)
+            }
+            val callPendingIntent = PendingIntent.getBroadcast(
+                context,
+                person.id * 10 + 4,
+                callIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val whatsappIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+                action = "com.example.ACTION_SEND_WHATSAPP"
+                putExtra("PERSON_ID", person.id)
+            }
+            val whatsappPendingIntent = PendingIntent.getBroadcast(
+                context,
+                person.id * 10 + 3,
+                whatsappIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            builder.addAction(android.R.drawable.ic_menu_call, "اتصل الآن", callPendingIntent)
+            builder.addAction(android.R.drawable.ic_menu_send, "إرسال واتساب", whatsappPendingIntent)
+            builder.addAction(android.R.drawable.checkbox_on_background, "أنا تواصلت", donePendingIntent)
+        }
+
+        notificationManager.notify(person.id, builder.build())
     }
 
-    // Build and show the call success confirmation notification
-    fun showCallConfirmedNotification(context: Context, personName: String) {
+    // Notification helper on success verification
+    fun showCallConfirmedNotification(context: Context, personName: String, personId: Int) {
         createNotificationChannel(context)
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.checkbox_on_background)
             .setContentTitle("تمام ❤️")
-            .setContentText("أنت اتصلت بـ $personName النهارده")
+            .setContentText("تم التحقق بنجاح من اتصالك بـ $personName اليوم")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(1004, builder.build())
+        notificationManager.notify(personId + 500000, builder.build())
     }
 
-    // Build and show the call failure reminder notification (when verification check fails)
-    fun showCallFailedNotification(context: Context, personName: String) {
+    // Notification helper on failed automatic checks
+    fun showCallFailedNotification(context: Context, personName: String, personId: Int) {
         createNotificationChannel(context)
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("لسه محتاج تطمن عليها")
-            .setContentText("هفكرك تاني كمان شوية")
+            .setContentTitle("لم نسجل مكالمة ناجحة مع $personName")
+            .setContentText("سنقوم بتذكيرك مرة أخرى لاحقًا")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(1005, builder.build())
+        notificationManager.notify(personId + 600000, builder.build())
     }
 }

@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [ReminderConfig::class, CallRecord::class], version = 1, exportSchema = false)
+@Database(entities = [Person::class, CallRecord::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
 
@@ -20,7 +20,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "call_reminder_database"
                 )
-                .fallbackToDestructiveMigration() // Simple on development migrations
+                .fallbackToDestructiveMigration() // Destructive migration for database layout expansion (V1 -> V2)
                 .build()
                 INSTANCE = instance
                 instance

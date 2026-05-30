@@ -18,11 +18,13 @@ class BootReceiver : BroadcastReceiver() {
 
             CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val config = repository.getConfig()
-                    if (config != null && config.isReminderEnabled && config.phoneNumber.isNotEmpty()) {
-                        // Reschedule active background alarm securely on boot
-                        val nextTrigger = ReminderScheduler.scheduleNextAlarm(context, config)
-                        repository.saveConfig(config.copy(nextReminderTimestamp = nextTrigger))
+                    val people = repository.getPeopleList()
+                    for (person in people) {
+                        if (person.isReminderEnabled && person.phoneNumber.isNotEmpty()) {
+                            // Reschedule active background alarm securely on boot
+                            val nextTrigger = ReminderScheduler.scheduleNextAlarm(context, person)
+                            repository.savePerson(person.copy(nextReminderTimestamp = nextTrigger))
+                        }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
